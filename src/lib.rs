@@ -20,14 +20,17 @@ use alloy_json_abi::JsonAbi;
 use alloy_primitives::{Address, B256};
 use contract::ContractMetadata;
 use errors::EtherscanError;
-use reqwest::{header, IntoUrl, Url};
+use reqwest::{IntoUrl, Method, Request, Url};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::{
     borrow::Cow,
+    // future::Future,
     io::Write,
     path::PathBuf,
+    // pin::Pin,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
+use tower::{Service, ServiceExt};
 
 pub mod account;
 pub mod block_number;
@@ -46,9 +49,9 @@ pub(crate) type Result<T, E = EtherscanError> = std::result::Result<T, E>;
 
 /// The Etherscan.io API client.
 #[derive(Clone, Debug)]
-pub struct Client {
+pub struct Client<S> {
     /// Client that executes HTTP requests
-    client: reqwest::Client,
+    client: S,
     /// Etherscan API key
     api_key: Option<String>,
     /// Etherscan API endpoint like <https://api(-chain).etherscan.io/api>
@@ -59,47 +62,32 @@ pub struct Client {
     cache: Option<Cache>,
 }
 
-impl Client {
-    /// Creates a `ClientBuilder` to configure a `Client`.
-    ///
-    /// This is the same as `ClientBuilder::default()`.
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// use alloy_chains::Chain;
-    /// use foundry_block_explorers::Client;
-    /// let client = Client::builder()
-    ///     .with_api_key("<API KEY>")
-    ///     .chain(Chain::mainnet())
-    ///     .unwrap()
-    ///     .build()
-    ///     .unwrap();
-    /// ```
-    pub fn builder() -> ClientBuilder {
-        ClientBuilder::default()
+impl<S> Client<S>
+where
+    S: Service<Request, Response = reqwest::Response> + Clone,
+    S::Error: std::fmt::Debug,
+{
+    /// Create a new client with the correct endpoints based on the chain and provided API key
+    pub fn new(service: S, chain: Chain, api_key: impl Into<String>) -> Result<Self> {
+        Client::<S>::builder().with_service(service).with_api_key(api_key).chain(chain)?.build()
     }
 
     /// Creates a new instance that caches etherscan requests
     pub fn new_cached(
+        service: S,
         chain: Chain,
         api_key: impl Into<String>,
         cache_root: Option<PathBuf>,
         cache_ttl: Duration,
     ) -> Result<Self> {
-        let mut this = Self::new(chain, api_key)?;
+        let mut this = Self::new(service, chain, api_key)?;
         this.cache = cache_root.map(|root| Cache::new(root, cache_ttl));
         Ok(this)
     }
 
-    /// Create a new client with the correct endpoints based on the chain and provided API key
-    pub fn new(chain: Chain, api_key: impl Into<String>) -> Result<Self> {
-        Client::builder().with_api_key(api_key).chain(chain)?.build()
-    }
-
     /// Create a new client with the correct endpoints based on the chain and API key
     /// from the default environment variable defined in [`Chain`].
-    pub fn new_from_env(chain: Chain) -> Result<Self> {
+    pub fn new_from_env(service: S, chain: Chain) -> Result<Self> {
         let api_key = match chain.kind() {
             ChainKind::Named(named) => match named {
                 // Extra aliases
@@ -130,21 +118,40 @@ impl Client {
             },
             ChainKind::Id(_) => Err(EtherscanError::ChainNotSupported(chain)),
         }?;
-        Self::new(chain, api_key)
+        Self::new(service, chain, api_key)
     }
 
     /// Create a new client with the correct endpoints based on the chain and API key
     /// from the default environment variable defined in [`Chain`].
     ///
     /// If the environment variable is not set, create a new client without it.
-    pub fn new_from_opt_env(chain: Chain) -> Result<Self> {
-        match Self::new_from_env(chain) {
+    pub fn new_from_opt_env(service: S, chain: Chain) -> Result<Self> {
+        match Self::new_from_env(service, chain) {
             Ok(client) => Ok(client),
             Err(EtherscanError::EnvVarNotFound(_)) => {
                 Self::builder().chain(chain).and_then(|c| c.build())
             }
             Err(e) => Err(e),
         }
+    }
+    /// Creates a `ClientBuilder` to configure a `Client`.
+    ///
+    /// This is the same as `ClientBuilder::default()`.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use alloy_chains::Chain;
+    /// use foundry_block_explorers::Client;
+    /// let client = Client::builder()
+    ///     .with_api_key("<API KEY>")
+    ///     .chain(Chain::mainnet())
+    ///     .unwrap()
+    ///     .build()
+    ///     .unwrap();
+    /// ```
+    pub fn builder() -> ClientBuilder<S> {
+        ClientBuilder::default()
     }
 
     /// Sets the root to the cache dir and the ttl to use
@@ -182,43 +189,61 @@ impl Client {
     }
 
     /// Execute an GET request with parameters.
-    async fn get_json<T: DeserializeOwned, Q: Serialize>(&self, query: &Q) -> Result<Response<T>> {
+    async fn get_json<T: DeserializeOwned, Q: Serialize>(
+        &mut self,
+        query: &Q,
+    ) -> Result<Response<T>> {
         let res = self.get(query).await?;
         self.sanitize_response(res)
     }
 
     /// Execute a GET request with parameters, without sanity checking the response.
-    async fn get<Q: Serialize>(&self, query: &Q) -> Result<String> {
+    async fn get<Q: Serialize>(&mut self, query: &Q) -> Result<String>
+where {
         trace!(target: "etherscan", "GET {}", self.etherscan_api_url);
-        let response = self
-            .client
-            .get(self.etherscan_api_url.clone())
-            .header(header::ACCEPT, "application/json")
-            .query(query)
-            .send()
-            .await?
+
+        // Serialize the query object to a query string.
+        // FIXME: Remove unwrap
+        let query_string = serde_urlencoded::to_string(query).unwrap();
+
+        // Parse the base URL and append the query string.
+        let mut url = self.etherscan_api_url.clone();
+
+        // Set the serialized query string as the URL's query
+        url.set_query(Some(&query_string));
+
+        let request = reqwest::Request::new(Method::GET, url);
+        self.client
+            .clone()
+            .oneshot(request)
+            .await
+            .unwrap()
             .text()
-            .await?;
-        Ok(response)
+            .await
+            .map_err(EtherscanError::from)
     }
 
     /// Execute a POST request with a form.
-    async fn post_form<T: DeserializeOwned, F: Serialize>(&self, form: &F) -> Result<Response<T>> {
+    async fn post_form<T: DeserializeOwned, F: Serialize>(
+        &mut self,
+        form: &F,
+    ) -> Result<Response<T>> {
         let res = self.post(form).await?;
         self.sanitize_response(res)
     }
 
     /// Execute a POST request with a form, without sanity checking the response.
-    async fn post<F: Serialize>(&self, form: &F) -> Result<String> {
+    async fn post<F: Serialize>(&mut self, form: &F) -> Result<String> {
         trace!(target: "etherscan", "POST {}", self.etherscan_api_url);
-        let response = self
-            .client
-            .post(self.etherscan_api_url.clone())
-            .form(form)
-            .send()
-            .await?
-            .text()
-            .await?;
+
+        let query_string = serde_urlencoded::to_string(form).unwrap();
+
+        let url = self.etherscan_api_url.clone();
+        let url = url.join(&format!("?{}", query_string)).unwrap();
+
+        let request = reqwest::Request::new(Method::POST, url);
+
+        let response = self.client.call(request).await.unwrap().text().await?;
         Ok(response)
     }
 
@@ -258,9 +283,11 @@ impl Client {
         module: &'static str,
         action: &'static str,
         other: T,
-    ) -> Query<'_, T> {
+        // TODO: Get rid of static thing
+    ) -> Query<'static, T> {
         Query {
-            apikey: self.api_key.as_deref().map(Cow::Borrowed),
+            // TODO: Use Arc
+            apikey: self.api_key.clone(),
             module: Cow::Borrowed(module),
             action: Cow::Borrowed(action),
             other,
@@ -268,10 +295,29 @@ impl Client {
     }
 }
 
-#[derive(Clone, Debug, Default)]
-pub struct ClientBuilder {
+// impl Service<Request> for Client {
+//     type Response = reqwest::Response;
+//
+//     type Error = reqwest::Error;
+//
+//     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>>>>;
+//
+//     fn poll_ready(
+//         &mut self,
+//         cx: &mut std::task::Context<'_>,
+//     ) -> std::task::Poll<std::prelude::v1::Result<(), Self::Error>> {
+//         self.client.poll_ready(cx)
+//     }
+//
+//     fn call(&mut self, req: Request) -> Self::Future {
+//         Box::pin(self.client.call(req))
+//     }
+// }
+//
+#[derive(Clone, Debug)]
+pub struct ClientBuilder<S> {
     /// Client that executes HTTP requests
-    client: Option<reqwest::Client>,
+    client: Option<S>,
     /// Etherscan API key
     api_key: Option<String>,
     /// Etherscan API endpoint like <https://api(-chain).etherscan.io/api>
@@ -282,9 +328,21 @@ pub struct ClientBuilder {
     cache: Option<Cache>,
 }
 
+impl<S> Default for ClientBuilder<S> {
+    fn default() -> Self {
+        Self {
+            client: None,
+            api_key: None,
+            etherscan_api_url: None,
+            etherscan_url: None,
+            cache: None,
+        }
+    }
+}
+
 // === impl ClientBuilder ===
 
-impl ClientBuilder {
+impl<S> ClientBuilder<S> {
     /// Configures the etherscan url and api url for the given chain
     ///
     /// # Errors
@@ -316,7 +374,7 @@ impl ClientBuilder {
     }
 
     /// Configures the `reqwest::Client`
-    pub fn with_client(mut self, client: reqwest::Client) -> Self {
+    pub fn with_service(mut self, client: S) -> Self {
         self.client = Some(client);
         self
     }
@@ -350,11 +408,12 @@ impl ClientBuilder {
     /// If the following required fields are missing:
     ///   - `etherscan_api_url`
     ///   - `etherscan_url`
-    pub fn build(self) -> Result<Client> {
+    pub fn build(self) -> Result<Client<S>> {
         let ClientBuilder { client, api_key, etherscan_api_url, etherscan_url, cache } = self;
 
         let client = Client {
-            client: client.unwrap_or_default(),
+            // TODO: Handle case where client is not set
+            client: client.unwrap(),
             api_key,
             etherscan_api_url: etherscan_api_url
                 .ok_or_else(|| EtherscanError::Builder("etherscan api url".to_string()))?,
@@ -457,7 +516,7 @@ pub enum ResponseData<T> {
 #[derive(Clone, Debug, Serialize)]
 struct Query<'a, T: Serialize> {
     #[serde(skip_serializing_if = "Option::is_none")]
-    apikey: Option<Cow<'a, str>>,
+    apikey: Option<String>,
     module: Cow<'a, str>,
     action: Cow<'a, str>,
     #[serde(flatten)]
@@ -487,7 +546,8 @@ mod tests {
 
     #[test]
     fn test_api_paths() {
-        let client = Client::new(Chain::goerli(), "").unwrap();
+        let client = reqwest::Client::new();
+        let client = Client::new(client, Chain::goerli(), "").unwrap();
         assert_eq!(client.etherscan_api_url.as_str(), "https://api-goerli.etherscan.io/api");
 
         assert_eq!(client.block_url(100), "https://goerli.etherscan.io/block/100");
@@ -495,7 +555,8 @@ mod tests {
 
     #[test]
     fn stringifies_block_url() {
-        let etherscan = Client::new(Chain::mainnet(), "").unwrap();
+        let client = reqwest::Client::new();
+        let etherscan = Client::new(client, Chain::mainnet(), "").unwrap();
         let block: u64 = 1;
         let block_url: String = etherscan.block_url(block);
         assert_eq!(block_url, format!("https://etherscan.io/block/{block}"));
@@ -503,7 +564,8 @@ mod tests {
 
     #[test]
     fn stringifies_address_url() {
-        let etherscan = Client::new(Chain::mainnet(), "").unwrap();
+        let client = reqwest::Client::new();
+        let etherscan = Client::new(client, Chain::mainnet(), "").unwrap();
         let addr: Address = Address::ZERO;
         let address_url: String = etherscan.address_url(addr);
         assert_eq!(address_url, format!("https://etherscan.io/address/{addr:?}"));
@@ -511,7 +573,8 @@ mod tests {
 
     #[test]
     fn stringifies_transaction_url() {
-        let etherscan = Client::new(Chain::mainnet(), "").unwrap();
+        let client = reqwest::Client::new();
+        let etherscan = Client::new(client, Chain::mainnet(), "").unwrap();
         let tx_hash = B256::ZERO;
         let tx_url: String = etherscan.transaction_url(tx_hash);
         assert_eq!(tx_url, format!("https://etherscan.io/tx/{tx_hash:?}"));
@@ -519,7 +582,8 @@ mod tests {
 
     #[test]
     fn stringifies_token_url() {
-        let etherscan = Client::new(Chain::mainnet(), "").unwrap();
+        let client = reqwest::Client::new();
+        let etherscan = Client::new(client, Chain::mainnet(), "").unwrap();
         let token_hash = Address::ZERO;
         let token_url: String = etherscan.token_url(token_hash);
         assert_eq!(token_url, format!("https://etherscan.io/token/{token_hash:?}"));
@@ -527,7 +591,8 @@ mod tests {
 
     #[test]
     fn local_networks_not_supported() {
-        let err = Client::new_from_env(Chain::dev()).unwrap_err();
+        let client = reqwest::Client::new();
+        let err = Client::new_from_env(client, Chain::dev()).unwrap_err();
         assert!(matches!(err, EtherscanError::LocalNetworksNotSupported));
     }
 }

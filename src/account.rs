@@ -8,12 +8,14 @@ use crate::{
     Client, EtherscanError, Query, Response, Result,
 };
 use alloy_primitives::{Address, Bytes, B256, U256};
+use reqwest::Request;
 use serde::{Deserialize, Serialize};
 use std::{
     borrow::Cow,
     collections::HashMap,
     fmt::{Display, Error, Formatter},
 };
+use tower::Service;
 
 /// The raw response from the balance-related API endpoints
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -452,7 +454,11 @@ impl Display for BlockType {
     }
 }
 
-impl Client {
+impl<S> Client<S>
+where
+    S: Service<Request, Response = reqwest::Response> + Clone,
+    S::Error: std::fmt::Debug,
+{
     /// Returns the Ether balance of a given address.
     ///
     /// # Examples
@@ -464,7 +470,7 @@ impl Client {
     /// # Ok(()) }
     /// ```
     pub async fn get_ether_balance_single(
-        &self,
+        &mut self,
         address: &Address,
         tag: Option<Tag>,
     ) -> Result<AccountBalance> {
@@ -500,7 +506,7 @@ impl Client {
     /// # Ok(()) }
     /// ```
     pub async fn get_ether_balance_multi(
-        &self,
+        &mut self,
         addresses: &[Address],
         tag: Option<Tag>,
     ) -> Result<Vec<AccountBalance>> {
@@ -531,7 +537,7 @@ impl Client {
     /// # Ok(()) }
     /// ```
     pub async fn get_transactions(
-        &self,
+        &mut self,
         address: &Address,
         params: Option<TxListParams>,
     ) -> Result<Vec<NormalTransaction>> {
@@ -558,7 +564,7 @@ impl Client {
     /// # Ok(()) }
     /// ```
     pub async fn get_internal_transactions(
-        &self,
+        &mut self,
         tx_query_option: InternalTxQueryOption,
         params: Option<TxListParams>,
     ) -> Result<Vec<InternalTransaction>> {
@@ -593,7 +599,7 @@ impl Client {
     /// # Ok(()) }
     /// ```
     pub async fn get_erc20_token_transfer_events(
-        &self,
+        &mut self,
         event_query_option: TokenQueryOption,
         params: Option<TxListParams>,
     ) -> Result<Vec<ERC20TokenTransferEvent>> {
@@ -619,7 +625,7 @@ impl Client {
     /// # Ok(()) }
     /// ```
     pub async fn get_erc721_token_transfer_events(
-        &self,
+        &mut self,
         event_query_option: TokenQueryOption,
         params: Option<TxListParams>,
     ) -> Result<Vec<ERC721TokenTransferEvent>> {
@@ -646,7 +652,7 @@ impl Client {
     /// # Ok(()) }
     /// ```
     pub async fn get_erc1155_token_transfer_events(
-        &self,
+        &mut self,
         event_query_option: TokenQueryOption,
         params: Option<TxListParams>,
     ) -> Result<Vec<ERC1155TokenTransferEvent>> {
@@ -668,7 +674,7 @@ impl Client {
     /// # Ok(()) }
     /// ```
     pub async fn get_mined_blocks(
-        &self,
+        &mut self,
         address: &Address,
         block_type: Option<BlockType>,
         page_and_offset: Option<(u64, u64)>,

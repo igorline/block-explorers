@@ -1,6 +1,8 @@
 use crate::{block_number::BlockNumber, Client, EtherscanError, Response, Result};
+use reqwest::Request;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use tower::Service;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[allow(missing_copy_implementations)]
@@ -9,7 +11,11 @@ pub struct BlockNumberByTimestamp {
     pub block_number: BlockNumber,
 }
 
-impl Client {
+impl<S> Client<S>
+where
+    S: Service<Request, Response = reqwest::Response> + Clone,
+    S::Error: std::fmt::Debug,
+{
     /// Returns either (1) the oldest block since a particular timestamp occurred or (2) the newest
     /// block that occurred prior to that timestamp
     ///
@@ -24,7 +30,7 @@ impl Client {
     /// # Ok(()) }
     /// ```
     pub async fn get_block_by_timestamp(
-        &self,
+        &mut self,
         timestamp: u64,
         closest: &str,
     ) -> Result<BlockNumberByTimestamp> {

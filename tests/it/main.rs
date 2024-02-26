@@ -21,15 +21,22 @@ mod version;
 /// Calls the function with a new Etherscan Client.
 pub async fn run_with_client<F, Fut, T>(chain: Chain, f: F) -> T
 where
-    F: FnOnce(Client) -> Fut,
+    F: FnOnce(Client<reqwest::Client>) -> Fut,
     Fut: Future<Output = T>,
 {
     init_tracing();
-    let (client, duration) = match Client::new_from_env(chain) {
+    let client = reqwest::Client::new();
+    let (client, duration) = match Client::new_from_env(client.clone(), chain) {
         Ok(c) => (c, rate_limit(chain, true)),
-        Err(_) => {
-            (Client::builder().chain(chain).unwrap().build().unwrap(), rate_limit(chain, false))
-        }
+        Err(_) => (
+            Client::<reqwest::Client>::builder()
+                .with_service(client)
+                .chain(chain)
+                .unwrap()
+                .build()
+                .unwrap(),
+            rate_limit(chain, false),
+        ),
     };
     run_at_least_duration(duration, f(client)).await
 }
@@ -68,7 +75,8 @@ fn init_tracing() {
 
 #[tokio::test]
 async fn check_wrong_etherscan_api_key() {
-    let client = Client::new(Chain::mainnet(), "ABCDEFG").unwrap();
+    let client = reqwest::Client::new();
+    let mut client = Client::new(client, Chain::mainnet(), "ABCDEFG").unwrap();
     let resp = client
         .contract_source_code("0xBB9bc244D798123fDe783fCc1C72d3Bb8C189413".parse().unwrap())
         .await

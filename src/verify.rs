@@ -1,7 +1,9 @@
 use crate::{Client, Response, Result};
 use alloy_primitives::Address;
+use reqwest::Request;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use tower::Service;
 
 /// Arguments for verifying contracts
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -158,10 +160,14 @@ impl AsRef<str> for CodeFormat {
     }
 }
 
-impl Client {
+impl<S> Client<S>
+where
+    S: Service<Request, Response = reqwest::Response> + Clone,
+    S::Error: std::fmt::Debug,
+{
     /// Submit Source Code for Verification
     pub async fn submit_contract_verification(
-        &self,
+        &mut self,
         contract: &VerifyContract,
     ) -> Result<Response<String>> {
         let body = self.create_query("contract", "verifysourcecode", contract);
@@ -171,7 +177,7 @@ impl Client {
     /// Check Source Code Verification Status with receipt received from
     /// `[Self::submit_contract_verification]`
     pub async fn check_contract_verification_status(
-        &self,
+        &mut self,
         guid: impl AsRef<str>,
     ) -> Result<Response<String>> {
         let body = self.create_query(
@@ -184,7 +190,7 @@ impl Client {
 
     /// Submit Proxy Contract for Verification
     pub async fn submit_proxy_contract_verification(
-        &self,
+        &mut self,
         contract: &VerifyProxyContract,
     ) -> Result<Response<String>> {
         let body = self.create_query("contract", "verifyproxycontract", contract);
@@ -194,7 +200,7 @@ impl Client {
     /// Check Proxy Contract Verification Status with receipt received from
     /// `[Self::submit_proxy_contract_verification]`
     pub async fn check_proxy_contract_verification_status(
-        &self,
+        &mut self,
         guid: impl AsRef<str>,
     ) -> Result<Response<String>> {
         let body = self.create_query(

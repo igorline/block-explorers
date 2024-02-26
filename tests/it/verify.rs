@@ -28,7 +28,7 @@ async fn can_flatten_and_verify_contract() {
             .optimization(true)
             .runs(200);
 
-    run_with_client(Chain::mainnet(), |client| async move {
+    run_with_client(Chain::mainnet(), |mut client| async move {
         let resp = client
             .submit_contract_verification(&contract)
             .await

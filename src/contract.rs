@@ -6,9 +6,11 @@ use crate::{
 };
 use alloy_json_abi::JsonAbi;
 use alloy_primitives::{Address, Bytes, B256};
+use reqwest::Request;
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, path::Path};
+use tower::Service;
 
 #[cfg(feature = "foundry-compilers")]
 use foundry_compilers::{artifacts::Settings, EvmVersion, Project, ProjectBuilder, SolcConfig};
@@ -333,7 +335,11 @@ pub struct ContractCreationData {
     pub transaction_hash: B256,
 }
 
-impl Client {
+impl<S> Client<S>
+where
+    S: Service<Request, Response = reqwest::Response> + Clone,
+    S::Error: std::fmt::Debug,
+{
     /// Fetches a verified contract's ABI.
     ///
     /// # Example
@@ -344,7 +350,7 @@ impl Client {
     /// let abi = client.contract_abi(address).await?;
     /// # Ok(()) }
     /// ```
-    pub async fn contract_abi(&self, address: Address) -> Result<JsonAbi> {
+    pub async fn contract_abi(&mut self, address: Address) -> Result<JsonAbi> {
         // apply caching
         if let Some(ref cache) = self.cache {
             // If this is None, then we have a cache miss
@@ -406,7 +412,8 @@ impl Client {
     /// assert_eq!(metadata.items[0].contract_name, "DAO");
     /// # Ok(()) }
     /// ```
-    pub async fn contract_source_code(&self, address: Address) -> Result<ContractMetadata> {
+    pub async fn contract_source_code(&mut self, address: Address) -> Result<ContractMetadata> {
+        println!("address: {:?}", address);
         // apply caching
         if let Some(ref cache) = self.cache {
             // If this is None, then we have a cache miss
@@ -421,6 +428,7 @@ impl Client {
 
         let query =
             self.create_query("contract", "getsourcecode", HashMap::from([("address", address)]));
+
         let response = self.get(&query).await?;
 
         // Source code is not verified
@@ -453,7 +461,10 @@ impl Client {
     /// let deployer = creation_data.contract_creator;
     /// # Ok(()) }
     /// ```
-    pub async fn contract_creation_data(&self, address: Address) -> Result<ContractCreationData> {
+    pub async fn contract_creation_data(
+        &mut self,
+        address: Address,
+    ) -> Result<ContractCreationData> {
         let query = self.create_query(
             "contract",
             "getcontractcreation",

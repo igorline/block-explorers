@@ -6,7 +6,7 @@ use serial_test::serial;
 #[tokio::test]
 #[serial]
 async fn check_get_block_by_timestamp_before() {
-    run_with_client(Chain::mainnet(), |client| async move {
+    run_with_client(Chain::mainnet(), |mut client| async move {
         let block_no = client.get_block_by_timestamp(1577836800, "before").await;
         assert!(block_no.is_ok());
 
@@ -19,7 +19,7 @@ async fn check_get_block_by_timestamp_before() {
 #[tokio::test]
 #[serial]
 async fn check_get_block_by_timestamp_after() {
-    run_with_client(Chain::mainnet(), |client| async move {
+    run_with_client(Chain::mainnet(), |mut client| async move {
         let block_no = client.get_block_by_timestamp(1577836800, "after").await;
 
         let block_no = block_no.unwrap().block_number;

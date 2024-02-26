@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 
+use reqwest::Request;
 use serde::Deserialize;
+use tower::Service;
 
 use crate::{Client, EtherscanError, Response, Result};
 
@@ -16,9 +18,16 @@ struct TransactionReceiptStatus {
     status: String,
 }
 
-impl Client {
+impl<S> Client<S>
+where
+    S: Service<Request, Response = reqwest::Response> + Clone,
+    S::Error: std::fmt::Debug,
+{
     /// Returns the status of a contract execution
-    pub async fn check_contract_execution_status(&self, tx_hash: impl AsRef<str>) -> Result<()> {
+    pub async fn check_contract_execution_status(
+        &mut self,
+        tx_hash: impl AsRef<str>,
+    ) -> Result<()> {
         let query = self.create_query(
             "transaction",
             "getstatus",
@@ -34,7 +43,10 @@ impl Client {
     }
 
     /// Returns the status of a transaction execution: `false` for failed and `true` for successful
-    pub async fn check_transaction_receipt_status(&self, tx_hash: impl AsRef<str>) -> Result<()> {
+    pub async fn check_transaction_receipt_status(
+        &mut self,
+        tx_hash: impl AsRef<str>,
+    ) -> Result<()> {
         let query = self.create_query(
             "transaction",
             "gettxreceiptstatus",

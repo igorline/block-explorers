@@ -1,7 +1,9 @@
 use crate::{utils::parse_units, Client, EtherscanError, Response, Result};
 use alloy_primitives::U256;
+use reqwest::Request;
 use serde::{de, Deserialize, Deserializer};
 use std::{collections::HashMap, str::FromStr};
+use tower::Service;
 
 const WEI_PER_GWEI: u64 = 1_000_000_000;
 
@@ -82,10 +84,14 @@ where
         .collect()
 }
 
-impl Client {
+impl<S> Client<S>
+where
+    S: Service<Request, Response = reqwest::Response> + Clone,
+    S::Error: std::fmt::Debug,
+{
     /// Returns the estimated time, in seconds, for a transaction to be confirmed on the blockchain
     /// for the specified gas price
-    pub async fn gas_estimate(&self, gas_price: U256) -> Result<u32> {
+    pub async fn gas_estimate(&mut self, gas_price: U256) -> Result<u32> {
         let query = self.create_query(
             "gastracker",
             "gasestimate",
@@ -105,7 +111,7 @@ impl Client {
     /// - Safe/Proposed/Fast gas price recommendations are now modeled as Priority Fees.
     /// - New field `suggestBaseFee`, the baseFee of the next pending block
     /// - New field `gasUsedRatio`, to estimate how busy the network is
-    pub async fn gas_oracle(&self) -> Result<GasOracle> {
+    pub async fn gas_oracle(&mut self) -> Result<GasOracle> {
         let query = self.create_query("gastracker", "gasoracle", serde_json::Value::Null);
         let response: Response<GasOracle> = self.get_json(&query).await?;
 
